@@ -1,0 +1,32 @@
+'DEFINES-------------------------------------------------------------
+
+#define WLN_DEBUG_PRINT 1
+#define WLN_WPA 1
+#define WLN_CLK PL_IO_NUM_53
+#define WLN_CS PL_IO_NUM_49
+#define WLN_DI PL_IO_NUM_52
+#define WLN_DO PL_IO_NUM_50
+#define WLN_RST PL_IO_NUM_51
+
+
+'INCLUDES------------------------------------------------------------
+include "settings\trunk\settings.tbh" 'this lib is necessary to save pre-shared master key
+includepp "settings.xtxt"
+include "sock\trunk\sock.tbh" 'this lib is necessary for the WLN lib's operation
+include "wln\trunk\wln.tbh"
+include "dhcp\trunk\dhcp.tbh"
+include "dns\trunk\dns.tbh"
+
+'DECLARATIONS--------------------------------------------------------
+declare sub start_dns(domainName as string)
+declare sub parse_JSON()
+declare sub DHCP_DNS_init(interface as pl_sock_interfaces, domainName as string)
+declare function connect_to_ap(byref ap_name as string, security_mode as pl_wln_security_modes, byref key as string, domain as pl_wln_domains) as en_wln_status_codes
+declare function send_request(request as string, interface as pl_sock_interfaces) as string
+
+enum dns_state
+	DNS_IDLE,
+	DNS_STARTED,
+	DNS_COMPLETE,
+	DNS_FAILED
+end enum

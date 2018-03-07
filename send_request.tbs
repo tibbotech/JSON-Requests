@@ -1,0 +1,270 @@
+include "global.tbh"  
+public dim server_ip_obtain as no_yes
+dim dns_socket, request_socket as byte
+dim rescan_tmr as byte
+dim s as string
+dim dns as dns_state
+
+'Initializes sockets for DNS and Requests. Starts DNS on assigned sockets.
+
+sub DHCP_DNS_init(interface as pl_sock_interfaces, domainName as string)
+	
+	dhcp_start(INTERFACE,"","")
+	
+	dns_socket=sock_get("DNS")
+	dns_start(dns_socket)
+
+	request_socket=sock_get("REQ")
+	sock.num=request_socket
+	sock.protocol=PL_SOCK_PROTOCOL_TCP
+	sock.inconmode= PL_SOCK_INCONMODE_ANY_IP_ANY_PORT
+	sock.httpportlist="80"
+		
+	sock.txbuffrq(2)
+	sock.rxbuffrq(2)
+
+	sys.buffalloc()
+	
+	start_dns(domainName)
+	
+end sub
+
+'DNS finds IP address for specified domain name. Assigns this IP as the target IP for the Request socket.
+
+sub start_dns(domainName as string)
+
+	dns=DNS_STARTED
+	sock.num=dns_socket
+	dns_query(domainName)	
+	
+end sub
+
+'Called on button pressed. If DNS is complete, sends request through the request socket.
+
+function send_request(request as string, interface as pl_sock_interfaces) as string
+	
+	if dns=DNS_COMPLETE then
+		sock.num=request_socket
+		sock.targetinterface=interface
+		sock.connect()
+		
+		while sock.statesimple<>PL_SSTS_EST
+			doevents
+		wend
+		
+		s=request
+		sock.setdata(s)
+		sock.send()
+	else
+		sys.debugprint("DNS not yet complete \x0d\x0a")
+	end if
+
+end function
+
+'If data comes back through the request socket, this data is parsed using the parse_JSON() sub.
+
+sub on_sock_data_arrival()
+
+	dhcp_proc_data() 
+	dns_proc_data()
+	wln_proc_data()
+	
+	if sock.num=request_socket and sock.statesimple=PL_SSTS_EST then
+		parse_JSON()
+	end if
+
+end sub
+
+'Reads data from the request socket. Extracts the meaningful JSON data and removes the rest. Prints JSON data on the console.
+
+sub parse_JSON()
+	
+	dim startp as byte
+	
+	while sock.rxlen>0	
+		s=sock.peekdata(255)
+		startp=instr(1,s,"\x0d\x0a\x0d\x0a", 1)
+		if startp=0 then
+			sock.getdata(230)
+		else 
+			sock.getdata(startp+3)
+			while sock.rxlen<10	
+			wend
+			s=sock.getdata(255)
+			sys.debugprint(s)
+		end if
+	wend
+		
+end sub
+
+sub callback_dns_answer_acquired(return_type as en_dns_return_type, byref return_string as string)
+	
+	dim target_ip as string
+	
+	if(return_type=EN_DNS_RET_IP) then
+		target_ip = ddstr(return_string)
+		sock.num=request_socket
+		sock.targetip=target_ip
+		sock.targetport=80
+	end if
+	
+end sub
+
+'Connects to Wi-Fi access point. Calculates WPA2 key the first time and saves it to settings.
+
+function connect_to_ap(byref ap_name as string, security_mode as pl_wln_security_modes, byref key as string, domain as pl_wln_domains) as en_wln_status_codes
+	dim pmk as string(32)
+
+	#if WLN_WPA
+		if security_mode=WLN_SECURITY_MODE_WPA1 or security_mode=WLN_SECURITY_MODE_WPA2 then 
+			if stg_get("APN",0)<>ap_name or stg_get("PW",0)<>key or stg_sg("PMK",0,pmk,EN_STG_GET)<>EN_STG_STATUS_OK then
+				'recalculate the key
+				pmk=wln_wpa_mkey_get(key,ap_name)
+				stg_set("PMK",0,pmk)
+				stg_set("APN",0,ap_name)
+				stg_set("PW",0,key)
+			else
+				pmk=stg_get("PMK",0) 'the key stays the same
+			end if
+		else
+			pmk=key
+		end if
+	#else
+		pmk=key
+	#endif
+
+	connect_to_ap=wln_start(ap_name,security_mode,pmk,domain,YES,PL_WLN_ASCAN_INFRASTRUCTURE)
+
+end function
+
+sub callback_dhcp_ok(renew as no_yes, interface as pl_sock_interfaces, byref ip as string, byref gateway_ip as string, byref netmask as string, lease_time as dword)
+	
+	if interface=PL_SOCK_INTERFACE_NET then
+		if renew=YES and net.ip<>ip then
+			sys.reboot
+		end if
+		if net.ip<>ip then
+			net.ip=ip
+			net.gatewayip=gateway_ip
+			net.netmask=netmask
+		end if
+		dns_connect(PL_SOCK_INTERFACE_NET, "8.8.4.4", 0)
+	end if
+	
+	if interface=PL_SOCK_INTERFACE_WLN then
+		if renew=YES and wln.ip<>ip then
+			sys.reboot
+		end if
+		if wln.ip<>ip then
+			wln.ip=ip
+			wln.gatewayip=gateway_ip
+			wln.netmask=netmask
+		end if
+		dns_connect(PL_SOCK_INTERFACE_WLN, "8.8.4.4", 0)
+	end if
+				
+end sub
+
+sub callback_dns_failure(status as en_dns_status_codes)
+	
+	dns=DNS_FAILED
+	sys.debugprint("DNS Failed \x0d\x0a")
+	
+end sub
+
+sub callback_dns_ok()
+
+	dns=DNS_COMPLETE
+	sys.debugprint("DNS Complete \x0d\x0a")
+	
+end sub
+
+sub on_sys_timer()
+	
+	dhcp_proc_timer()
+	dns_proc_timer()
+	wln_proc_timer()
+
+end sub
+
+sub on_wln_task_complete(completed_task as pl_wln_tasks)
+
+	wln_proc_task_complete(completed_task)
+	
+end sub
+
+sub on_wln_event(wln_event as pl_wln_events)
+
+	wln_proc_event(wln_event)
+
+end sub
+
+sub callback_dhcp_failure(interface as pl_sock_interfaces,failure_code as en_dhcp_status_codes)
+	
+	sys.debugprint("DHCP Failed \x0d\x0a")
+	
+end sub
+
+sub callback_wln_failure(wln_state as en_wln_status_codes)
+
+	sys.debugprint("WLN Failed \x0d\x0a")
+	
+end sub
+
+'====================================================================Empty Callbacks
+
+sub callback_dhcp_pre_clear_ip(interface as pl_sock_interfaces)
+	
+end sub
+
+sub callback_dhcp_pre_buffrq(required_buff_pages as byte)
+	
+end sub
+
+sub callback_dhcp_buff_released()
+	
+end sub
+
+sub callback_dns_pre_buffrq(num_of_pages_required as byte)
+	
+end sub
+
+sub callback_dns_buff_released()
+	
+end sub
+
+sub callback_wln_ok()
+	
+end sub
+
+sub callback_wln_starting_association()
+	
+end sub
+
+sub callback_wln_pre_buffrq(required_buff_pages as byte)
+	
+end sub
+
+sub callback_wln_mkey_progress_update(progress as byte)
+	
+end sub
+
+sub callback_wln_rescan_result(current_rssi as byte, scan_rssi as byte, different_ap as no_yes)
+	
+end sub
+
+sub callback_wln_rescan_for_better_ap()
+	
+end sub
+
+sub callback_stg_error(byref stg_name_or_num as string,index as byte,status as en_stg_status_codes)
+	
+end sub
+
+sub callback_stg_pre_get(byref stg_name_or_num as string,index as byte,byref stg_value as string)
+	
+end sub
+
+sub callback_stg_post_set(byref stg_name_or_num as string, index as byte,byref stg_value as string)
+	
+end sub
